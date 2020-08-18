@@ -23,6 +23,7 @@ type DraggableState = {
 export function draggable(
   Consumer: Context<DNDContext>["Consumer"]
 ): React.ForwardRefExoticComponent<DraggableProps> {
+  const noop = () => {}
   class BaseDraggable extends React.Component<
     DraggableInnerProps,
     DraggableState
@@ -33,7 +34,11 @@ export function draggable(
     private panResponder: PanResponderInstance;
 
     static defaultProps = {
-      bounceBack: true
+      bounceBack: true,
+      onPress: noop,
+      scale: 1.1, // Max scale of animation
+      moveSlop: 15, // Slop area for press
+      delay: 40 // Animation delay in miliseconds
     };
 
     constructor(props: DraggableInnerProps) {
@@ -42,7 +47,13 @@ export function draggable(
       this.identifier = props.customId || Symbol("draggable");
 
       this.state = {
-        pan: new Animated.ValueXY()
+        pan: new Animated.ValueXY(),
+        canMove: false,
+        onStart: true,
+        onPress: false,
+        scale: new Animated.Value(1),
+        moveSlop: 15, // Slop area for press
+        delay: 40,
       };
 
       this.moveEvent = Animated.event([
@@ -54,37 +65,109 @@ export function draggable(
       ]);
 
       this.panResponder = PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onPanResponderMove: (e, gesture) => {
-          const { pageX, pageY } = e.nativeEvent;
+        onPanResponderGrant: (e, gestureState) => {
+          this.setState({onPress: true});
+          this.onLongPressTimeout = setTimeout(() => {
+            this.setState({canMove: true});
+            Animated.timing(
+              this.state.scale,
+              {
+                toValue: 1.1,
+                friction: 1,
+                duration: 300
+              }
+            ).start(() => {
+              Animated.timing(
+                this.state.scale,
+                {
+                  toValue: 0.7,
+                  friction: 1,
+                  duration: 300
+                }
+              ).start(() => {
+                Animated.timing(
+                  this.state.scale,
+                  {
+                    toValue: 0.9,
+                    friction: 1,
+                    duration: 300
+                  }
+                ).start()
+              })
+            })
 
-          this.props.__dndContext.handleDragMove(this.identifier, {
-            x: pageX,
-            y: pageY
-          });
-          this.moveEvent(e, gesture);
+          }, 1200);
+        },
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => false,
+        onShouldBlockNativeResponder: () => false,
+        onPanResponderMove: (e, gesture) => {
+          if(this.state.canMove) {
+            const { pageX, pageY } = e.nativeEvent;
+            if(this.state.onStart) {
+
+              this.props.__dndContext.handleDragStart(this.identifier, {
+                x: pageX,
+                y: pageY
+              });
+              this.setState({onStart: false});
+            }
+
+            this.props.__dndContext.handleDragMove(this.identifier, {
+                x: pageX,
+                y: pageY
+            });
+
+            this.moveEvent(e, gesture);
+
+          }
         },
         onPanResponderStart: e => {
-          const { pageX, pageY } = e.nativeEvent;
 
-          this.props.__dndContext.handleDragStart(this.identifier, {
-            x: pageX,
-            y: pageY
-          });
+          //if(this.state.canMove) {
+            const { pageX, pageY } = e.nativeEvent;
+            // this.props.__dndContext.handleDragStart(this.identifier, {
+            //     x: pageX,
+            //     y: pageY
+            // });
+          //}
         },
-        onPanResponderRelease: e => {
-          const { pageX, pageY } = e.nativeEvent;
+        onPanResponderRelease: (e, gestureState) => {
+            clearTimeout(this.onLongPressTimeout);
+            this.setState({canMove: false, onStart: true, onPress: false});
+            const { pageX, pageY } = e.nativeEvent;
+            if (this.props.bounceBack) {
+                Animated.spring(this.state.pan, {
+                    toValue: { x: 0, y: 0 }
+                }).start();
+            }
+            this.props.__dndContext.handleDragEnd(this.identifier, {
+                x: pageX,
+                y: pageY
+            });
+            const { moveSlop, delay, onPress } = this.props
 
-          if (this.props.bounceBack) {
-            Animated.spring(this.state.pan, {
-              toValue: { x: 0, y: 0 }
-            }).start();
-          }
-          this.props.__dndContext.handleDragEnd(this.identifier, {
-            x: pageX,
-            y: pageY
-          });
-        }
+            const isOutOfRange = gestureState.dy > moveSlop || gestureState.dy < (-moveSlop) || gestureState.dx > moveSlop || gestureState.dx < (-moveSlop)
+
+            if (!isOutOfRange) {
+              setTimeout(() => {
+                Animated.spring(
+                  this.state.scale,
+                  {
+                    toValue: 1,
+                    friction: 1,
+                    duration: 200
+                  }
+                ).start()
+
+                //onPress(e)
+              }, delay)
+            }
+        },
+        onPanResponderTerminate: () => {
+          clearTimeout(this.onLongPressTimeout);
+          this.setState({onPress: false});
+        },
       });
     }
 
@@ -148,19 +231,24 @@ export function draggable(
     }
 
     render() {
+      const { scale } = this.state
       const { children } = this.props;
-
-      return children({
-        viewProps: {
-          onLayout: this.onLayout,
-          ref: this.handleRef,
-          // @ts-ignore
-          style: {
-            transform: this.state.pan.getTranslateTransform()
-          },
-          ...this.panResponder.panHandlers
-        }
-      });
+      return (
+        <Animated.View
+          style={[{
+            transform: [
+              {
+                scale
+              }
+            ]
+          }
+          ]}>
+          {children({
+          viewProps: Object.assign({ onPress: this.state.onPress, onLayout: this.onLayout, ref: this.handleRef, style: {
+                  transform: this.state.pan.getTranslateTransform()
+              } }, this.panResponder.panHandlers)})}
+        </Animated.View>
+      )
     }
   }
 
